@@ -52,9 +52,11 @@ def build_cloud_provider(settings: Settings) -> ChatProvider:
             api_key=settings.azure_openai_api_key.get_secret_value(),
             api_version=settings.azure_openai_api_version,
             default_model=settings.cloud_chat_model,
+            tool_reasoning_effort=settings.cloud_tool_reasoning_effort,
         )
     assert settings.openai_api_key is not None
     return OpenAIProvider(
         api_key=settings.openai_api_key.get_secret_value(),
         default_model=settings.cloud_chat_model,
+        tool_reasoning_effort=settings.cloud_tool_reasoning_effort,
     )

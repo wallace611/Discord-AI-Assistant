@@ -2,10 +2,22 @@
 
 from openai import AsyncOpenAI
 
-from bot.providers._compat import OpenAICompatProvider
+from bot.providers._cloud import CloudProvider
 
 
-class OpenAIProvider(OpenAICompatProvider):
-    def __init__(self, *, api_key: str, default_model: str, timeout: float = 120.0) -> None:
+class OpenAIProvider(CloudProvider):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        default_model: str,
+        tool_reasoning_effort: str | None = None,
+        timeout: float = 120.0,
+    ) -> None:
         client = AsyncOpenAI(api_key=api_key, timeout=timeout)
-        super().__init__(client, name="openai", default_model=default_model)
+        super().__init__(
+            client,
+            name="openai",
+            default_model=default_model,
+            tool_reasoning_effort=tool_reasoning_effort,
+        )

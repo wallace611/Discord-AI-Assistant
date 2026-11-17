@@ -2,10 +2,10 @@
 
 from openai import AsyncAzureOpenAI
 
-from bot.providers._compat import OpenAICompatProvider
+from bot.providers._cloud import CloudProvider
 
 
-class AzureOpenAIProvider(OpenAICompatProvider):
+class AzureOpenAIProvider(CloudProvider):
     def __init__(
         self,
         *,
@@ -13,6 +13,7 @@ class AzureOpenAIProvider(OpenAICompatProvider):
         api_key: str,
         api_version: str,
         default_model: str,
+        tool_reasoning_effort: str | None = None,
         timeout: float = 120.0,
     ) -> None:
         client = AsyncAzureOpenAI(
@@ -21,4 +22,9 @@ class AzureOpenAIProvider(OpenAICompatProvider):
             api_version=api_version,
             timeout=timeout,
         )
-        super().__init__(client, name="azure", default_model=default_model)
+        super().__init__(
+            client,
+            name="azure",
+            default_model=default_model,
+            tool_reasoning_effort=tool_reasoning_effort,
+        )

@@ -325,7 +325,7 @@ async def test_factories_follow_settings() -> None:
     cloud_azure = build_cloud_provider(azure_settings)
 
     assert isinstance(local, OllamaProvider)
-    assert local.default_model == "qwen3-vl:4b"
+    assert local.default_model == "qwen3-vl:4b-instruct"
     assert local.embed_model == "bge-m3"
     assert isinstance(cloud_openai, OpenAIProvider)
     assert cloud_openai.default_model == "chat-model"

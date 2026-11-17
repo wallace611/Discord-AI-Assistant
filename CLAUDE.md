@@ -16,7 +16,7 @@
 ```
 Discord gateway (discord.py 2.7+, asyncio event queue)
         |
-Router (local, qwen3-vl:4b) -- 判斷 intent 與難度 tier
+Router (local, qwen3-vl:4b-instruct) -- 判斷 intent 與難度 tier
         |
   +-----------------+-------------------+----------------------+
   | Fast reply      | Agent loop        | Media                |
@@ -32,7 +32,7 @@ Memory store            Tool layer
 
 | 角色 | 模型 | 位置 | 備註 |
 |---|---|---|---|
-| Router、摘要、記憶抽取、簡單看圖 | `qwen3-vl:4b` | 本地 Ollama，常駐 | 一個模型包辦，節省 VRAM |
+| Router、摘要、記憶抽取、簡單看圖 | `qwen3-vl:4b-instruct` | 本地 Ollama，常駐 | 一個模型包辦，節省 VRAM |
 | Embedding | `bge-m3` | 本地 Ollama，常駐 | 中英文皆可 |
 | Reranker（P1 後段） | `bge-reranker-v2-m3` | 本地 | 可選 |
 | 困難推理、agent | 由 `.env` 設定 | 雲端 | OpenAI 或 Azure OpenAI |
@@ -41,7 +41,7 @@ Memory store            Tool layer
 | TTS | 由 `.env` 設定 | 雲端 | 同上 |
 | 生圖 | 由 `.env` 設定 | 雲端 | 1070 Ti 跑 SD 太慢 |
 
-VRAM 規則：本地常駐的模型只有 `qwen3-vl:4b` 和 `bge-m3`。不要在本地加入其他常駐模型，除非先確認 `ollama ps` 的總用量仍低於 8GB 並留有 KV cache 空間。所有雲端模型名稱都必須從 `.env` 讀取，不要寫死在程式碼裡。
+VRAM 規則：本地常駐的模型只有 `qwen3-vl:4b-instruct` 和 `bge-m3`。不要在本地加入其他常駐模型，除非先確認 `ollama ps` 的總用量仍低於 8GB 並留有 KV cache 空間。所有雲端模型名稱都必須從 `.env` 讀取，不要寫死在程式碼裡。
 
 ## Python 環境（必須遵守）
 
@@ -158,8 +158,9 @@ CLOUD_VISION_MODEL=
 CLOUD_STT_MODEL=
 CLOUD_TTS_MODEL=
 CLOUD_IMAGE_MODEL=
+CLOUD_TOOL_REASONING_EFFORT=       # 帶工具請求的 reasoning_effort；留空則不送，被拒時自動改 none
 OLLAMA_BASE_URL=http://localhost:11434/v1
-LOCAL_ROUTER_MODEL=qwen3-vl:4b
+LOCAL_ROUTER_MODEL=qwen3-vl:4b-instruct
 LOCAL_EMBED_MODEL=bge-m3
 DATABASE_URL=postgresql://bot:bot@localhost:5432/bot
 SEARXNG_URL=http://localhost:8080
@@ -223,7 +224,7 @@ incus launch images:debian/12 t --ephemeral -p sandbox && incus exec t -- python
 - 中文全文檢索需要分詞；P1 先只做向量檢索加 reranker，BM25 留到之後。
 
 ### 多模態
-- 看圖：先用本地 `qwen3-vl:4b`；router 判斷是複雜圖表或文件時，改用 `CLOUD_VISION_MODEL`。
+- 看圖：先用本地 `qwen3-vl:4b-instruct`；router 判斷是複雜圖表或文件時，改用 `CLOUD_VISION_MODEL`。
 - 語音：Discord 自 2026-03-01 起強制語音連線支援 DAVE（E2EE），不支援的連線會收到 close code 4017。discord.py 核心不提供語音接收，所以語音由獨立的 `voice_worker`（Py-cord + `davey`）處理。
   - Pipeline：Silero VAD 切段 -> 雲端 STT -> 透過 IPC 送給主 bot 的 router / agent -> 雲端 TTS -> 播放回語音頻道。
   - P3 開工前第一件事：寫一個最小腳本驗證「加入語音頻道並收到音訊」，確認可行再繼續。

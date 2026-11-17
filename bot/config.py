@@ -32,9 +32,14 @@ class Settings(BaseSettings):
     cloud_stt_model: str | None = None
     cloud_tts_model: str | None = None
     cloud_image_model: str | None = None
+    # ``reasoning_effort`` sent with tool requests. Empty: not sent, but switched to
+    # "none" automatically if the model refuses tools with reasoning.
+    cloud_tool_reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
+    ) = None
 
     ollama_base_url: str = "http://localhost:11434/v1"
-    local_router_model: str = "qwen3-vl:4b"
+    local_router_model: str = "qwen3-vl:4b-instruct"
     local_embed_model: str = "bge-m3"
 
     database_url: SecretStr | None = None

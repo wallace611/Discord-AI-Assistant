@@ -11,7 +11,7 @@ def test_defaults() -> None:
     settings = make_settings()
     assert settings.llm_provider_cloud == "openai"
     assert settings.ollama_base_url == "http://localhost:11434/v1"
-    assert settings.local_router_model == "qwen3-vl:4b"
+    assert settings.local_router_model == "qwen3-vl:4b-instruct"
     assert settings.daily_cloud_token_budget_per_user is None
     assert settings.incus_sandbox_profile is None
     assert settings.run_code_timeout_seconds == 30.0
