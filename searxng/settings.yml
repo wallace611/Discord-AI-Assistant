@@ -1,0 +1,16 @@
+# SearXNG settings for the bot's web_search tool.
+# Everything not listed here keeps the SearXNG default.
+use_default_settings: true
+
+server:
+  # The secret key comes from the SEARXNG_SECRET environment variable.
+  # Only the bot on this host calls the instance, so no rate limiter (and no Valkey).
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # The bot calls /search?format=json; without "json" here SearXNG answers 403.
+  formats:
+    - html
+    - json

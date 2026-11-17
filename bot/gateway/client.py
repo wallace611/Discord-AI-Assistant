@@ -117,7 +117,44 @@ class BotClient(discord.Client):
         await self._memory.maintain(job.message.channel_id, job.message.guild_id)
         if job.addressed:
             await self._replies.wait_idle()
-            await self._memory.facts.extract(job.message)
+            await self._memory.extract_facts(job.message)
+
+    # Raw events, because the message is usually not in the cache. They only touch
+    # stored data and need no model; a failure is logged and never reaches a reply.
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        await self._forget(payload.channel_id, [payload.message_id])
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        await self._forget(payload.channel_id, sorted(payload.message_ids))
+
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        try:
+            # Same filter and text rules as for new messages: bots (this bot's own
+            # streaming edits included) and empty messages are not stored.
+            edited = to_stored(payload.message)
+            if edited is not None:
+                await self._memory.edit_message(
+                    edited.channel_id, edited.message_id, edited.content
+                )
+        except Exception:
+            logger.exception(
+                "could not apply a message edit", extra={"message_id": payload.message_id}
+            )
+
+    async def _forget(self, channel_id: int, message_ids: list[int]) -> None:
+        try:
+            removed = await self._memory.forget_messages(channel_id, message_ids)
+        except Exception:
+            logger.exception(
+                "could not forget deleted messages",
+                extra={"channel_id": channel_id, "count": len(message_ids)},
+            )
+            return
+        if removed:
+            logger.info(
+                "forgot deleted messages", extra={"channel_id": channel_id, "count": removed}
+            )
 
     async def _flush_loop(self) -> None:
         """Periodically close chunks in channels that have gone quiet."""

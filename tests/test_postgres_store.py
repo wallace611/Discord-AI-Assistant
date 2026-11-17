@@ -71,6 +71,9 @@ async def exercise(store: MemoryStore) -> None:
     await store.unchunked_messages(100, limit=10)
     await store.channels_with_unchunked()
     await store.add_chunk(CHUNK)
+    await store.delete_messages(100, [1, 2])
+    await store.edit_message(100, 1, "edited")
+    await store.delete_facts_from([1, 2])
     await store.search_chunks([0.1, 0.2], guild_id=200, channel_id=100, limit=5)
     await store.list_facts(7, 200)
     await store.add_fact(7, 200, "A fact.", 1)
@@ -82,7 +85,10 @@ async def test_every_statement_has_matching_placeholders_and_arguments() -> None
     pool = RecordingPool()
     await exercise(PostgresStore(pool))  # type: ignore[arg-type]
 
-    assert len(pool.statements) == 14  # add_chunk issues two statements
+    # add_chunk issues two statements. The fake finds no message to delete or edit, so
+    # those two stop after one statement each; the cascades are covered in
+    # test_message_sync.py.
+    assert len(pool.statements) == 17
     for sql, args in pool.statements:
         used = {int(number) for number in re.findall(r"\$(\d+)", sql)}
         assert used == set(range(1, len(args) + 1)), sql

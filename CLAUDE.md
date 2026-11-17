@@ -163,6 +163,7 @@ LOCAL_ROUTER_MODEL=qwen3-vl:4b
 LOCAL_EMBED_MODEL=bge-m3
 DATABASE_URL=postgresql://bot:bot@localhost:5432/bot
 SEARXNG_URL=http://localhost:8080
+SEARXNG_SECRET=                    # SearXNG 容器用，openssl rand -hex 32
 INCUS_IMAGE=images:debian/12
 INCUS_SANDBOX_PROFILE=             # 留空則停用 run_code
 RUN_CODE_TIMEOUT_SECONDS=30

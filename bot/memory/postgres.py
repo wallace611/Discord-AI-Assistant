@@ -176,6 +176,78 @@ class PostgresStore:
         )
         return [ChunkHit(**dict(row)) for row in rows]
 
+    @staticmethod
+    async def _invalidate(
+        conn: Any, channel_id: int, message_ids: Sequence[int], chunk_ids: Sequence[int]
+    ) -> None:
+        """Drop what was derived from these messages. Runs inside the caller's transaction."""
+        if chunk_ids:
+            # messages.chunk_id is ON DELETE SET NULL, so the chunk's other messages
+            # become unchunked and are chunked again later.
+            await conn.execute(
+                "DELETE FROM chunks WHERE channel_id = $1 AND chunk_id = ANY($2::bigint[])",
+                channel_id,
+                list(chunk_ids),
+            )
+        # A summary cannot be un-summarised; rebuild it from the remaining messages.
+        await conn.execute(
+            "DELETE FROM channel_summaries WHERE channel_id = $1 AND covered_message_id >= $2",
+            channel_id,
+            min(message_ids),
+        )
+        await conn.execute(
+            "DELETE FROM user_facts WHERE source_message_id = ANY($1::bigint[])",
+            list(message_ids),
+        )
+
+    async def delete_messages(self, channel_id: int, message_ids: Sequence[int]) -> int:
+        wanted = list(dict.fromkeys(message_ids))
+        if not wanted:
+            return 0
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                "SELECT message_id, chunk_id FROM messages "
+                "WHERE channel_id = $1 AND message_id = ANY($2::bigint[]) FOR UPDATE",
+                channel_id,
+                wanted,
+            )
+            if not rows:
+                return 0
+            found = [row["message_id"] for row in rows]
+            chunk_ids = sorted({row["chunk_id"] for row in rows if row["chunk_id"] is not None})
+            await self._invalidate(conn, channel_id, found, chunk_ids)
+            await conn.execute(
+                "DELETE FROM messages WHERE channel_id = $1 AND message_id = ANY($2::bigint[])",
+                channel_id,
+                found,
+            )
+            return len(found)
+
+    async def edit_message(self, channel_id: int, message_id: int, content: str) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "UPDATE messages SET content = $3 "
+                "WHERE channel_id = $1 AND message_id = $2 AND content IS DISTINCT FROM $3 "
+                "RETURNING chunk_id",
+                channel_id,
+                message_id,
+                content,
+            )
+            if row is None:
+                return False
+            chunk_ids = [row["chunk_id"]] if row["chunk_id"] is not None else []
+            await self._invalidate(conn, channel_id, [message_id], chunk_ids)
+            return True
+
+    async def delete_facts_from(self, message_ids: Sequence[int]) -> int:
+        if not message_ids:
+            return 0
+        status = await self._pool.execute(
+            "DELETE FROM user_facts WHERE source_message_id = ANY($1::bigint[])",
+            list(message_ids),
+        )
+        return _affected(status)
+
     async def list_facts(self, user_id: int, guild_id: int | None) -> list[UserFact]:
         rows = await self._pool.fetch(
             "SELECT fact_id, user_id, guild_id, fact, created_at FROM user_facts "

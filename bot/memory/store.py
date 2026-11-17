@@ -7,7 +7,7 @@ guilds or DM channels.
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -98,6 +98,28 @@ class MemoryStore(Protocol):
         """Nearest chunks inside the caller's scope, best first."""
         ...
 
+    async def delete_messages(self, channel_id: int, message_ids: Sequence[int]) -> int:
+        """Forget messages that were deleted on Discord. Returns how many were stored.
+
+        Only rows with this ``channel_id`` are touched. Whatever was derived from a
+        removed message goes with it: its chunk is deleted (the chunk's other
+        messages become unchunked again), the channel summary is deleted when it
+        covers the message, and facts extracted from it are deleted.
+        """
+        ...
+
+    async def edit_message(self, channel_id: int, message_id: int, content: str) -> bool:
+        """Replace the text of a stored message. Returns False when nothing changed.
+
+        False means the message is not stored in ``channel_id`` or already has this
+        text. Otherwise derived data is dropped exactly as in ``delete_messages``.
+        """
+        ...
+
+    async def delete_facts_from(self, message_ids: Sequence[int]) -> int:
+        """Delete facts extracted from these messages. Returns how many."""
+        ...
+
     async def list_facts(self, user_id: int, guild_id: int | None) -> list[UserFact]: ...
 
     async def add_fact(
@@ -144,6 +166,7 @@ class InMemoryStore:
         self._chunks: list[tuple[int, NewChunk]] = []
         self._summaries: dict[int, ChannelSummary] = {}
         self._facts: dict[int, UserFact] = {}
+        self._fact_sources: dict[int, int | None] = {}  # fact_id -> source message id
         self._next_id = 1
 
     def _channel(self, channel_id: int) -> list[StoredMessage]:
@@ -209,6 +232,52 @@ class InMemoryStore:
         hits.sort(key=lambda hit: hit.score, reverse=True)
         return hits[:limit]
 
+    def _invalidate(self, channel_id: int, message_ids: Sequence[int]) -> None:
+        """Drop the chunks, summary and facts derived from these stored messages."""
+        ids = set(message_ids)
+        for chunk_id, chunk in list(self._chunks):
+            if chunk.channel_id == channel_id and ids & set(chunk.message_ids):
+                self._chunks.remove((chunk_id, chunk))
+                # The chunk's other messages are unchunked again, as with ON DELETE SET NULL.
+                self._chunked.difference_update(chunk.message_ids)
+        summary = self._summaries.get(channel_id)
+        if summary is not None and min(ids) <= summary.covered_message_id:
+            del self._summaries[channel_id]
+        self._drop_facts_from(ids)
+
+    def _drop_facts_from(self, message_ids: set[int]) -> int:
+        doomed = [fid for fid, source in self._fact_sources.items() if source in message_ids]
+        for fact_id in doomed:
+            self._facts.pop(fact_id, None)
+            del self._fact_sources[fact_id]
+        return len(doomed)
+
+    async def delete_messages(self, channel_id: int, message_ids: Sequence[int]) -> int:
+        found = [
+            message_id
+            for message_id in dict.fromkeys(message_ids)
+            if (message := self._messages.get(message_id)) is not None
+            and message.channel_id == channel_id
+        ]
+        if not found:
+            return 0
+        self._invalidate(channel_id, found)
+        for message_id in found:
+            del self._messages[message_id]
+            self._chunked.discard(message_id)
+        return len(found)
+
+    async def edit_message(self, channel_id: int, message_id: int, content: str) -> bool:
+        message = self._messages.get(message_id)
+        if message is None or message.channel_id != channel_id or message.content == content:
+            return False
+        self._messages[message_id] = replace(message, content=content)
+        self._invalidate(channel_id, [message_id])
+        return True
+
+    async def delete_facts_from(self, message_ids: Sequence[int]) -> int:
+        return self._drop_facts_from(set(message_ids))
+
     async def list_facts(self, user_id: int, guild_id: int | None) -> list[UserFact]:
         rows = [f for f in self._facts.values() if f.user_id == user_id and f.guild_id == guild_id]
         return sorted(rows, key=lambda f: f.fact_id)
@@ -222,6 +291,7 @@ class InMemoryStore:
         fact_id = self._next_id
         self._next_id += 1
         self._facts[fact_id] = UserFact(fact_id, user_id, guild_id, fact, datetime.now(UTC))
+        self._fact_sources[fact_id] = source_message_id
         return True
 
     async def delete_fact(self, user_id: int, fact_id: int) -> bool:
@@ -229,12 +299,14 @@ class InMemoryStore:
         if fact is None or fact.user_id != user_id:
             return False
         del self._facts[fact_id]
+        self._fact_sources.pop(fact_id, None)
         return True
 
     async def delete_all_facts(self, user_id: int, guild_id: int | None) -> int:
         doomed = [f.fact_id for f in await self.list_facts(user_id, guild_id)]
         for fact_id in doomed:
             del self._facts[fact_id]
+            self._fact_sources.pop(fact_id, None)
         return len(doomed)
 
     async def close(self) -> None:
