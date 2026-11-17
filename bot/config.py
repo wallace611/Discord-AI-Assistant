@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     searxng_url: str = "http://localhost:8080"
 
+    # Code sandbox. Empty profile disables the run_code tool.
+    incus_image: str = "images:debian/12"
+    incus_sandbox_profile: str | None = None
+    run_code_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+
+    # JSON file listing MCP servers; missing file means no MCP tools.
+    mcp_config_path: str | None = "mcp_servers.json"
+
     # None means unlimited.
     daily_cloud_token_budget_per_user: int | None = Field(default=None, ge=0)
 

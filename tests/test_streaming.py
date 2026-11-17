@@ -89,6 +89,35 @@ async def test_overflow_without_separators_is_cut_at_the_limit() -> None:
     assert channel.texts == ["x" * 10, "x" * 10, "x" * 5]
 
 
+async def test_status_shows_alone_then_under_text_then_disappears() -> None:
+    reply, channel, clock = make_reply()
+
+    await reply.set_status("🔧 working")
+    assert channel.texts == ["🔧 working"]
+    assert reply.first_message_id == channel.messages[0].id
+
+    clock.now = 2.0
+    await reply.feed("Answer")
+    assert channel.messages[0].content == "Answer\n\n🔧 working"
+
+    clock.now = 4.0
+    await reply.set_status("")
+    assert channel.messages[0].content == "Answer"
+
+    clock.now = 6.0
+    await reply.set_status("🔧 again")
+    await reply.finish()
+    assert channel.texts == ["Answer"]
+
+
+async def test_status_only_reply_still_gets_a_placeholder() -> None:
+    reply, channel, _ = make_reply()
+    await reply.set_status("🔧 working")
+    await reply.finish()
+    assert channel.texts == [EMPTY_REPLY]
+    assert len(channel.messages) == 1
+
+
 def test_split_prefers_newline_then_space() -> None:
     assert _split("aaa bbb\nccc ddd", 12) == ("aaa bbb", "ccc ddd")
     assert _split("aaa bbb ccc", 9) == ("aaa bbb", "ccc")

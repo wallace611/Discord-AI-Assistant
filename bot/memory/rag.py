@@ -44,6 +44,7 @@ class Retriever:
         guild_id: int | None,
         channel_id: int,
         newer_than_excluded: int | None = None,
+        top_k: int | None = None,
     ) -> list[ChunkHit]:
         """Best-matching chunks visible from (guild_id, channel_id).
 
@@ -71,4 +72,4 @@ class Retriever:
             scores = await self._reranker.rerank(query, [hit.content for hit in hits])
             ranked = sorted(zip(scores, hits, strict=True), key=lambda pair: pair[0], reverse=True)
             hits = [hit for _, hit in ranked]
-        return hits[: self._top_k]
+        return hits[: min(top_k or self._top_k, self._candidates)]

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import discord
 
+from bot.gateway.actions import MessageActions
 from bot.gateway.streaming import NO_MENTIONS, Editable, SendFn
 from bot.memory.store import StoredMessage
 
@@ -26,6 +27,8 @@ class IncomingMessage:
     bot_id: int
     bot_name: str
     send: SendFn  # posts a reply chunk and returns the created message
+    # Side effects and confirmation prompts for agent tools; None outside Discord.
+    actions: MessageActions | None = None
 
 
 def is_addressed(message: discord.Message, bot_id: int) -> bool:
@@ -91,6 +94,7 @@ def to_event(
         bot_id=bot_id,
         bot_name=bot_name,
         send=make_sender(message),
+        actions=MessageActions(message),
     )
 
 

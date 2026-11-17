@@ -6,6 +6,9 @@ import sys
 
 from pydantic import ValidationError
 
+from bot.agent import AgentLoop
+from bot.agent.setup import add_sandbox, build_registry, start_mcp
+from bot.agent.tools.mcp import MCPManager
 from bot.config import Settings, get_settings
 from bot.gateway import BotClient, MessageHandler
 from bot.logging_setup import configure_logging
@@ -43,6 +46,7 @@ async def run(settings: Settings) -> None:
     local = build_local_provider(settings)
     cloud = build_cloud_provider(settings)
     memory: MemoryService | None = None
+    mcp: MCPManager | None = None
     try:
         memory = MemoryService(
             await open_store(settings),
@@ -50,17 +54,24 @@ async def run(settings: Settings) -> None:
             embedder=local,
             chat_model=settings.local_router_model,
         )
+        registry = build_registry(settings, memory)
+        await add_sandbox(settings, registry)
+        mcp = await start_mcp(settings, registry)
+        logger.info("tools ready", extra={"tools": [tool.name for tool in registry]})
         handler = MessageHandler(
             router=Router(local, model=settings.local_router_model),
             local=local,
             cloud=cloud,
             budget=DailyTokenBudget(settings.daily_cloud_token_budget_per_user),
             memory=memory,
+            agent=AgentLoop(cloud, registry),
         )
         client = BotClient(handler, memory)
         async with client:
             await client.start(settings.discord_token.get_secret_value())
     finally:
+        if mcp is not None:
+            await mcp.aclose()
         if memory is not None:
             await memory.close()
         await local.aclose()

@@ -66,19 +66,37 @@ class StreamingReply:
         self._sent_any = False
         # Id of the first Discord message this reply produced, once there is one.
         self.first_message_id: int | None = None
+        self._status = ""
 
     async def feed(self, delta: str) -> None:
         """Append ``delta``; push to Discord if the edit interval has elapsed."""
         self._text += delta
-        if self._clock() - self._last_flush >= self._interval:
-            await self._flush()
+        await self._maybe_flush()
+
+    async def set_status(self, status: str) -> None:
+        """Show a transient line (such as the tool in use) under the text so far.
+
+        The line disappears on ``finish`` or when set to an empty string.
+        """
+        self._status = status.strip()
+        await self._maybe_flush()
 
     async def finish(self) -> None:
-        """Push any remaining text. Sends a placeholder if nothing was produced."""
+        """Push any remaining text. Shows a placeholder if nothing was produced."""
+        self._status = ""
         await self._flush()
-        if not self._sent_any:
+        if self._text.strip():
+            return
+        if self._message is not None:
+            # Only a status line was ever shown; replace it rather than leave it.
+            await self._show(EMPTY_REPLY)
+        elif not self._sent_any:
             await self._send(EMPTY_REPLY)
             self._sent_any = True
+
+    async def _maybe_flush(self) -> None:
+        if self._clock() - self._last_flush >= self._interval:
+            await self._flush()
 
     async def _flush(self) -> None:
         while len(self._text) > self._limit:
@@ -87,7 +105,10 @@ class StreamingReply:
             # The head is final; the remainder continues in a fresh message.
             self._message = None
             self._shown = ""
-        await self._show(self._text)
+        display = self._text
+        if self._status:
+            display = f"{display}\n\n{self._status}" if display.strip() else self._status
+        await self._show(display)
         self._last_flush = self._clock()
 
     async def _show(self, content: str) -> None:

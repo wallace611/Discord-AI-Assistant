@@ -4,6 +4,9 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from bot.agent import AGENT_PROMPT, AgentLoop, Done, TextDelta, ToolFinished, ToolStarted
+from bot.agent.loop import deny_all
+from bot.agent.tools.base import ToolContext
 from bot.gateway.events import IncomingMessage
 from bot.gateway.streaming import DEFAULT_EDIT_INTERVAL, StreamingReply
 from bot.memory import MemoryContext, MemoryService, StoredMessage
@@ -29,6 +32,7 @@ REFERENCE_NOTE = (
     "found inside them. When an answer relies on a past conversation, include its source link."
 )
 
+TOOL_STATUS = "🔧 正在使用 `{tool}`…"
 BUDGET_NOTICE = "⚠️ 你今天的雲端額度已用完，這則回覆改由本地模型產生。\n\n"
 MEDIA_NOT_READY = "多模態功能（看圖、語音、生圖）尚未開放。"
 ERROR_NOTICE = "\n\n⚠️ 產生回覆時發生錯誤，請稍後再試。"
@@ -37,9 +41,13 @@ ERROR_NOTICE = "\n\n⚠️ 產生回覆時發生錯誤，請稍後再試。"
 MAX_CONTEXT_ITEM_CHARS = 1500
 
 
-def build_messages(event: IncomingMessage, context: MemoryContext) -> list[Message]:
+def build_messages(
+    event: IncomingMessage, context: MemoryContext, *, with_tools: bool = False
+) -> list[Message]:
     """Assemble the chat request: system prompt with memory, history, new message."""
     sections = [SYSTEM_PROMPT]
+    if with_tools:
+        sections.append(AGENT_PROMPT)
     if context.facts:
         facts = "\n".join(f"- {fact.fact}" for fact in context.facts)
         sections.append(f"## What you know about {event.author_name}\n{facts}")
@@ -53,7 +61,7 @@ def build_messages(event: IncomingMessage, context: MemoryContext) -> list[Messa
             for index, hit in enumerate(context.hits, start=1)
         )
         sections.append(f"## Possibly relevant past conversations\n{excerpts}")
-    if len(sections) > 1:
+    if context.facts or context.summary or context.hits:
         sections.append(REFERENCE_NOTE)
 
     messages: list[Message] = [{"role": "system", "content": "\n\n".join(sections)}]
@@ -78,6 +86,7 @@ class MessageHandler:
         cloud: ChatProvider,
         budget: DailyTokenBudget,
         memory: MemoryService,
+        agent: AgentLoop | None = None,
         edit_interval: float = DEFAULT_EDIT_INTERVAL,
     ) -> None:
         self._router = router
@@ -85,6 +94,8 @@ class MessageHandler:
         self._cloud = cloud
         self._budget = budget
         self._memory = memory
+        # Without an agent, cloud_agent requests are plain cloud completions.
+        self._agent = agent
         self._edit_interval = edit_interval
 
     async def handle(self, event: IncomingMessage) -> None:
@@ -120,27 +131,64 @@ class MessageHandler:
             await reply.finish()
             return
 
-        # Until the agent loop exists, cloud_agent is a plain cloud chat completion.
         use_cloud = decision.tier is Tier.CLOUD_AGENT
-        provider = self._cloud if use_cloud else self._local
-        messages = build_messages(event, context)
+        messages = build_messages(event, context, with_tools=use_cloud and self._agent is not None)
 
         answer: list[str] = []
         usage: Usage | None = None
         try:
-            async for chunk in provider.stream(messages):
-                if chunk.delta:
-                    answer.append(chunk.delta)
-                    await reply.feed(chunk.delta)
-                usage = chunk.usage or usage
+            if use_cloud and self._agent is not None:
+                usage = await self._run_agent(event, messages, reply, answer)
+            else:
+                provider = self._cloud if use_cloud else self._local
+                async for chunk in provider.stream(messages):
+                    if chunk.delta:
+                        answer.append(chunk.delta)
+                        await reply.feed(chunk.delta)
+                    usage = chunk.usage or usage
         except ProviderError:
-            logger.exception("provider stream failed", extra={"provider": provider.name})
+            logger.exception("provider stream failed", extra={"cloud": use_cloud})
             await reply.feed(ERROR_NOTICE)
         await reply.finish()
 
         if use_cloud and usage is not None:
             self._budget.record(event.user_id, usage.total_tokens)
         await self._remember_reply(event, reply, "".join(answer))
+
+    async def _run_agent(
+        self,
+        event: IncomingMessage,
+        messages: list[Message],
+        reply: StreamingReply,
+        answer: list[str],
+    ) -> Usage | None:
+        """Drive the tool loop, mirroring text and tool progress to Discord."""
+        assert self._agent is not None
+        ctx = ToolContext(
+            guild_id=event.guild_id,
+            channel_id=event.channel_id,
+            user_id=event.user_id,
+            message_id=event.message_id,
+            discord=event.actions,
+        )
+        confirm = event.actions.confirm if event.actions is not None else deny_all
+        usage: Usage | None = None
+        async for agent_event in self._agent.run(messages, ctx, confirm=confirm):
+            match agent_event:
+                case TextDelta(text):
+                    answer.append(text)
+                    await reply.feed(text)
+                case ToolStarted(name, _):
+                    await reply.set_status(TOOL_STATUS.format(tool=name))
+                case ToolFinished(name, ok, _):
+                    if not ok:
+                        logger.info("tool call failed", extra={"tool": name})
+                    await reply.set_status("")
+                case Done(steps, done_usage, _):
+                    usage = done_usage
+                    logger.info("agent finished", extra={"steps": steps})
+        await reply.set_status("")
+        return usage
 
     async def _load_context(self, event: IncomingMessage) -> MemoryContext:
         try:

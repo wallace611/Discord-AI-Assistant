@@ -13,6 +13,9 @@ def test_defaults() -> None:
     assert settings.ollama_base_url == "http://localhost:11434/v1"
     assert settings.local_router_model == "qwen3-vl:4b"
     assert settings.daily_cloud_token_budget_per_user is None
+    assert settings.incus_sandbox_profile is None
+    assert settings.run_code_timeout_seconds == 30.0
+    assert settings.mcp_config_path == "mcp_servers.json"
 
 
 def test_secrets_are_not_exposed_in_repr() -> None:

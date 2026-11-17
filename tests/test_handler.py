@@ -1,5 +1,7 @@
 from typing import Any
 
+from bot.agent import AGENT_PROMPT, AgentLoop, ToolRegistry
+from bot.agent.tools.base import Tier, Tool, ToolContext, ToolResult
 from bot.gateway.events import IncomingMessage
 from bot.gateway.handler import (
     BUDGET_NOTICE,
@@ -7,13 +9,14 @@ from bot.gateway.handler import (
     MEDIA_NOT_READY,
     REFERENCE_NOTE,
     SYSTEM_PROMPT,
+    TOOL_STATUS,
     MessageHandler,
     build_messages,
 )
 from bot.memory import ChunkHit, InMemoryStore, MemoryContext, MemoryService, UserFact
 from bot.providers.base import ProviderError, Usage
 from bot.router import DailyTokenBudget, Router
-from fakes import T0, FakeChannel, FakeProvider, stored
+from fakes import T0, FakeChannel, FakeProvider, stored, text_stream, tool_call_stream
 
 
 def route_json(tier: str) -> str:
@@ -229,6 +232,72 @@ async def test_embedding_outage_only_disables_retrieval() -> None:
 
     assert harness.channel.texts == ["ok"]
     assert {"role": "user", "content": "bob: earlier message"} in local.stream_calls[0]["messages"]
+
+
+def agent_harness(cloud: FakeProvider, tools: list[Tool]) -> Harness:
+    local = FakeProvider(name="local", reply=route_json("cloud_agent"))
+    harness = Harness(local, cloud, DailyTokenBudget(10_000))
+    harness.handler._agent = AgentLoop(cloud, ToolRegistry(tools))
+    return harness
+
+
+def make_tool(name: str, tier: Tier, calls: list) -> Tool:
+    async def run(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        calls.append((args, ctx))
+        return ToolResult("result")
+
+    return Tool(name=name, description="d", tier=tier, run=run)
+
+
+async def test_agent_path_streams_tool_status_then_answer_and_records_usage() -> None:
+    calls: list = []
+    cloud = FakeProvider(
+        name="cloud",
+        streams=[
+            tool_call_stream(("lookup", {"q": "x"}), usage=Usage(10, 5, 15)),
+            text_stream("Found it.", usage=Usage(20, 5, 25)),
+        ],
+    )
+    harness = agent_harness(cloud, [make_tool("lookup", Tier.READ_ONLY, calls)])
+
+    await harness.run("look it up")
+
+    [(args, ctx)] = calls
+    assert args == {"q": "x"}
+    assert (ctx.guild_id, ctx.channel_id, ctx.user_id, ctx.message_id) == (200, 100, 7, 5000)
+    assert ctx.discord is None
+    message = harness.channel.messages[0]
+    assert message.sent_as == TOOL_STATUS.format(tool="lookup")
+    assert message.edits == ["Found it."]  # the status is gone before the answer streams
+    assert harness.budget.used(7) == 40
+    assert AGENT_PROMPT in cloud.stream_calls[0]["messages"][0]["content"]
+    [saved] = await harness.store.recent_messages(100, limit=10)
+    assert saved.content == "Found it."
+
+
+async def test_agent_side_effects_are_refused_without_discord_actions() -> None:
+    calls: list = []
+    cloud = FakeProvider(
+        name="cloud", streams=[tool_call_stream(("pin", {})), text_stream("Could not.")]
+    )
+    harness = agent_harness(cloud, [make_tool("pin", Tier.SIDE_EFFECT, calls)])
+
+    await harness.run("pin this")
+
+    assert calls == []
+    assert harness.channel.texts == ["Could not."]
+
+
+async def test_without_an_agent_cloud_tier_is_a_plain_completion() -> None:
+    local = FakeProvider(name="local", reply=route_json("cloud_agent"))
+    cloud = FakeProvider(name="cloud", chunks=["plain"])
+    harness = Harness(local, cloud)
+
+    await harness.run()
+
+    assert harness.channel.texts == ["plain"]
+    assert cloud.stream_calls[0].get("tools") is None
+    assert AGENT_PROMPT not in cloud.stream_calls[0]["messages"][0]["content"]
 
 
 def test_build_messages_adds_memory_sections_as_reference_data() -> None:

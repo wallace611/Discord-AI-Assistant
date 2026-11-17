@@ -1,6 +1,7 @@
 .venv/
 voice_worker/.venv/
 .env
+mcp_servers.json
 __pycache__/
 *.py[cod]
 *.egg-info/

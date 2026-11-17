@@ -75,6 +75,17 @@ class UserFacts:
     async def forget_all(self, user_id: int, guild_id: int | None) -> int:
         return await self._store.delete_all_facts(user_id, guild_id)
 
+    async def remember(
+        self, user_id: int, guild_id: int | None, fact: str, source_message_id: int | None
+    ) -> bool:
+        """Store a fact the user explicitly asked to keep. Returns False if known."""
+        cleaned = " ".join(fact.split())[:MAX_FACT_CHARS]
+        if not cleaned:
+            return False
+        if len(await self._store.list_facts(user_id, guild_id)) >= self._max_facts:
+            return False
+        return await self._store.add_fact(user_id, guild_id, cleaned, source_message_id)
+
     async def extract(self, message: StoredMessage) -> list[str]:
         """Extract and store new facts from ``message``. Returns the facts added."""
         if message.is_bot or len(message.content.strip()) < self._min_chars:

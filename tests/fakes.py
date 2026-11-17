@@ -1,14 +1,41 @@
 """Test doubles shared across test modules."""
 
+import json
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from bot.config import Settings
 from bot.memory import StoredMessage
-from bot.providers.base import ChatChunk, ChatResponse, Message, Usage
+from bot.providers.base import ChatChunk, ChatResponse, Message, ToolCall, Usage
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+
+def tool_call_stream(
+    *calls: tuple[str, dict[str, Any]], text: str = "", usage: Usage | None = None
+) -> list[ChatChunk]:
+    """A scripted stream in which the model requests the given tool calls."""
+    chunks = [ChatChunk(delta=text)] if text else []
+    chunks.append(
+        ChatChunk(
+            tool_calls=tuple(
+                ToolCall(id=f"call_{index}", name=name, arguments=json.dumps(args))
+                for index, (name, args) in enumerate(calls)
+            ),
+            finish_reason="tool_calls",
+            usage=usage,
+        )
+    )
+    return chunks
+
+
+def text_stream(*parts: str, usage: Usage | None = None) -> list[ChatChunk]:
+    """A scripted stream that just answers with text."""
+    return [
+        *(ChatChunk(delta=part) for part in parts),
+        ChatChunk(finish_reason="stop", usage=usage),
+    ]
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -75,6 +102,7 @@ class FakeProvider:
         stream_error: Exception | None = None,
         embed_fn: Callable[[str], list[float]] = lambda text: [1.0, 0.0],
         embed_error: Exception | None = None,
+        streams: Sequence[Sequence[ChatChunk]] = (),
     ) -> None:
         self.name = name
         self.default_model = f"{name}-model"
@@ -86,6 +114,8 @@ class FakeProvider:
         self.stream_error = stream_error
         self.embed_fn = embed_fn
         self.embed_error = embed_error
+        # Scripted per-call streams (each a full chunk sequence); used before ``chunks``.
+        self.streams = [list(stream) for stream in streams]
         self.complete_calls: list[dict[str, Any]] = []
         self.stream_calls: list[dict[str, Any]] = []
         self.embed_calls: list[list[str]] = []
@@ -99,6 +129,10 @@ class FakeProvider:
 
     async def stream(self, messages: Sequence[Message], **kwargs: Any) -> AsyncIterator[ChatChunk]:
         self.stream_calls.append({"messages": list(messages), **kwargs})
+        if self.streams:
+            for scripted in self.streams.pop(0):
+                yield scripted
+            return
         for chunk in self.chunks:
             yield ChatChunk(delta=chunk)
         if self.stream_error is not None:
@@ -121,6 +155,7 @@ class FakeMessage:
     def __init__(self, content: str, id: int) -> None:
         self.id = id
         self.content = content
+        self.sent_as = content  # the content of the original send
         self.edits: list[str] = []
 
     async def edit(self, *, content: str, **_: Any) -> None:

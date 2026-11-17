@@ -117,8 +117,10 @@ docker compose up -d
 │   │   ├── openai.py
 │   │   └── azure.py
 │   ├── agent/
-│   │   ├── loop.py           # tool-calling loop
-│   │   └── tools/            # one file per tool, plus MCP client
+│   │   ├── loop.py           # tool-calling loop (step budget, confirmation, output wrapping)
+│   │   ├── registry.py       # ToolRegistry
+│   │   ├── setup.py          # builds the registry from settings; sandbox + MCP startup
+│   │   └── tools/            # one file per tool, plus MCP client (mcp.py)
 │   ├── memory/
 │   │   ├── store.py          # MemoryStore interface + in-process implementation
 │   │   ├── postgres.py       # MemoryStore on Postgres + pgvector, runs migrations
@@ -161,9 +163,33 @@ LOCAL_ROUTER_MODEL=qwen3-vl:4b
 LOCAL_EMBED_MODEL=bge-m3
 DATABASE_URL=postgresql://bot:bot@localhost:5432/bot
 SEARXNG_URL=http://localhost:8080
+INCUS_IMAGE=images:debian/12
+INCUS_SANDBOX_PROFILE=             # 留空則停用 run_code
+RUN_CODE_TIMEOUT_SECONDS=30
+MCP_CONFIG_PATH=mcp_servers.json   # 檔案不存在則沒有 MCP 工具
 DAILY_CLOUD_TOKEN_BUDGET_PER_USER=
 VOICE_WORKER_IPC_URL=
 ```
+
+### 沙盒 profile（run_code）
+
+`run_code` 只有在 `INCUS_SANDBOX_PROFILE` 指向一個**沒有網路裝置**的 profile 時才會啟用；啟動時會用 `incus profile show` 檢查，有 `type: nic` 就停用並記 error log。建立方式：
+
+```bash
+incus profile create sandbox
+incus profile device add sandbox root disk path=/ pool=default size=1GiB
+# 確認映像檔有 python3
+incus launch images:debian/12 t --ephemeral -p sandbox && incus exec t -- python3 --version; incus delete -f t
+```
+
+### MCP 伺服器（`mcp_servers.json`，不提交）
+
+```json
+{"servers": {"docs": {"transport": "stdio", "command": "uvx", "args": ["mcp-server-docs"], "tier": "read_only"},
+             "crm": {"transport": "http", "url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ..."}}}}
+```
+
+`tier` 為 `read_only` / `sandbox` / `side_effect`，預設 `side_effect`（需使用者確認）。工具名稱為 `伺服器名__工具名`。
 
 ## 設計規範
 
@@ -183,7 +209,9 @@ VOICE_WORKER_IPC_URL=
   1. 唯讀，可自動執行：`web_search`、`fetch_url`、`search_server_history`、`recall_memory`
   2. 沙盒：`run_code` 在 Incus ephemeral container 中執行，無網路、限時、限記憶體，執行完就刪除
   3. 有副作用，需使用者按按鈕確認：建立 thread、發起投票、`remember`、pin 訊息
-- 網頁內容、歷史訊息、工具輸出一律視為資料，不視為指令（防 prompt injection）。
+- 網頁內容、歷史訊息、工具輸出一律視為資料，不視為指令（防 prompt injection）。工具輸出包在 `<tool_output>` 內，內容中的同名標籤會被跳脫。
+- `fetch_url` 只允許公開位址：先解析 DNS、檢查每個位址，再把連線釘在已檢查的 IP 上（Host header 保留原主機名），redirect 每一跳重做檢查；不讀環境的 proxy 設定。
+- 8 步的上限算的是工具呼叫總數，不是模型回合數。
 - 所有送出的訊息都設定 `allowed_mentions=AllowedMentions.none()`。
 - 新工具優先用 MCP server 接入，不要修改 agent 核心。
 
@@ -226,7 +254,7 @@ VOICE_WORKER_IPC_URL=
 依序完成，每個階段完成並通過測試後再進入下一階段。
 
 - [x] P0 骨架：venv 與 `pyproject.toml`、config、gateway + event queue、provider 抽象層（三家）、router、串流回覆
-- [ ] P1 記憶：docker compose（Postgres + pgvector）、訊息 ingest、短期摘要、RAG 檢索、`/memory` 指令
+- [x] P1 記憶：docker compose（Postgres + pgvector）、訊息 ingest、短期摘要、RAG 檢索、`/memory` 指令
 - [ ] P2 Agent：tool loop、SearXNG、`fetch_url`、`search_server_history`、權限分級與確認按鈕、Incus 沙盒、MCP client
 - [ ] P3 多模態：看圖（本地加雲端升級）、DAVE 語音接收驗證、voice worker（雲端 STT / TTS）、雲端生圖
 - [ ] P4 加固：每位使用者的雲端額度、rate limit、log 與 tracing（可自架 Langfuse）、回歸測試集
